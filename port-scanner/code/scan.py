@@ -1,49 +1,74 @@
+"""port-scanner: which TCP ports on the target accept a connection.
+
+Every address the target resolves to (IPv4 and IPv6) is probed. A port that
+accepts on any address is one finding, with the per-address detail under
+``raw``; closed ports are not findings.
+"""
+
 import os
-import socket
-import yaml
-import sammaParser
 
-# Load base config
-config_path = os.path.join(os.path.dirname(__file__), '../../config.yaml')
-try:
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-except FileNotFoundError:
-    config = {'defaults': {'ports': [80, 443, 8080, 8443], 'timeout': 3}}
+import samma_finding
+from samma_finding import config, netutil
+from samma_finding.catalog import port_scanner as checks
 
-defaults = config.get('defaults', {})
+SCANNER = "port-scanner"
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "config.yaml")
+DEFAULT_PORTS = [80, 443, 8080, 8443]
 
-# Read target (required)
-target = os.getenv('TARGET', '')
-if not target:
-    print('ERROR: TARGET environment variable is required')
-    exit(1)
 
-# Determine ports: PORT (single) > PORTS (comma-separated) > config defaults
-if os.getenv('PORT'):
-    ports = [int(os.getenv('PORT'))]
-elif os.getenv('PORTS'):
-    ports = [int(p.strip()) for p in os.getenv('PORTS').split(',') if p.strip()]
-else:
-    ports = defaults.get('ports', [80, 443, 8080, 8443])
+def settings(environ=None, cfg=None):
+    """PORT (single) > PORTS (comma-separated) > config defaults."""
+    env = os.environ if environ is None else environ
+    defaults = config.section("defaults", CONFIG_PATH, cfg)
+    if env.get("PORT"):
+        ports = [int(env["PORT"])]
+    elif env.get("PORTS"):
+        ports = [int(p.strip()) for p in env["PORTS"].split(",") if p.strip()]
+    else:
+        ports = [int(p) for p in defaults.get("ports", DEFAULT_PORTS)]
+    timeout = float(env.get("TIMEOUT", defaults.get("timeout", 3)))
+    return {"ports": ports, "timeout": timeout}
 
-# Timeout
-timeout = float(os.getenv('TIMEOUT', defaults.get('timeout', 3)))
 
-# Scan each port
-for port in ports:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.settimeout(timeout)
-    result = sock.connect_ex((target, port))
-    sock.close()
+def classify(port):
+    """The check an open ``port`` raises."""
+    if port in checks.ADMIN_PORTS:
+        return "SAMMA-PORT-OPEN-ADMIN"
+    return "SAMMA-PORT-OPEN"
 
-    status = 'open' if result == 0 else 'closed'
-    finding = {
-        'host': target,
-        'port': port,
-        'status': status,
-        'type': 'PortScan'
-    }
-    sammaParser.logger(finding)
 
-sammaParser.endThis()
+def scheme_for(port):
+    return checks.SCHEMES.get(port) or checks.ADMIN_PORTS.get(port) or "tcp"
+
+
+def scan(run, opts=None, resolve=netutil.resolve, probe=netutil.probe_port):
+    opts = opts or settings()
+    addresses = resolve(run.target)  # socket.gaierror ends the run as failed
+    for port in opts["ports"]:
+        results = []
+        for address in addresses:
+            is_open = probe(address, port, opts["timeout"])
+            entry = address.describe()
+            entry["status"] = "open" if is_open else "closed"
+            results.append(entry)
+        open_on = [r for r in results if r["status"] == "open"]
+        if not open_on:
+            continue
+        evidence = "tcp/%d open on %s" % (
+            port, ", ".join("%s (%s)" % (r["address"], r["family"]) for r in open_on))
+        service = checks.ADMIN_PORTS.get(port)
+        if service:
+            evidence += "; port is normally %s" % service
+        raw = {
+            "host": run.target,
+            "port": port,
+            "status": "open",
+            "type": "PortScan",
+            "addresses": results,
+        }
+        run.finding(classify(port), run.endpoint(port=port, scheme=scheme_for(port)),
+                    evidence=evidence, raw=raw)
+
+
+if __name__ == "__main__":
+    samma_finding.main(SCANNER, scan)

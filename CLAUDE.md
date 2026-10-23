@@ -20,11 +20,19 @@ cat <tool>/out/<tool>.json
 ls <tool>/out/die
 ```
 
-There are no automated tests. Verification is manual: run the container, inspect the JSON output in `<tool>/out/`.
+Unit tests (standard library only, no network, no third-party modules) live in `tests/`:
+
+```bash
+python3 -m unittest discover -s tests -t .
+```
+
+They cover the shared package (message shape, size caps, run outcomes, IPv6 resolution) and every
+scanner's classification through fakes. End-to-end verification is still manual: run the container,
+inspect the JSON lines in `<tool>/out/`.
 
 ## CI/CD
 
-`.github/workflows/docker-build.yml` runs on every push to `main`. It uses a matrix strategy to build all 8 tool images in parallel and pushes them to GHCR as `ghcr.io/samma-io/detect-<tool-name>:latest` and `ghcr.io/samma-io/detect-<tool-name>:sha-<short-sha>`.
+`.github/workflows/docker-build.yml` runs on every push to `main`. It uses a matrix strategy to build all 9 tool images in parallel and pushes them to GHCR as `ghcr.io/samma-io/detect-<tool-name>:latest` and `ghcr.io/samma-io/detect-<tool-name>:sha-<short-sha>`.
 
 The workflow authenticates to GHCR using the automatic `GITHUB_TOKEN` — no secrets need to be configured.
 
@@ -34,19 +42,34 @@ The workflow authenticates to GHCR using the automatic `GITHUB_TOKEN` — no sec
 
 Each tool is a self-contained Docker image that:
 1. Reads config from env vars, falling back to `config.yaml` for defaults
-2. Performs the detection and calls `sammaParser.logger(finding_dict)` for each result
-3. Calls `sammaParser.endThis()` at the end, which writes `{"scan":"done"}` then creates `/out/die`
+2. Performs the detection and calls `run.finding(check_id, endpoint, evidence=..., raw=...)` for each
+   failing check or inventory fact
+3. Returns from `scan(run)`; `samma_finding.main` then emits exactly one run message with the outcome
+   (`succeeded`, `failed` on an exception, `timed_out` on SIGTERM) and writes `/out/die`
 
 The `/out/die` file is the shutdown signal — the Filebeat sidecar's liveness probe watches for it and kills the pod.
 
-### Two-module pattern
+### Shared package and the per-tool scan.py
 
-Every tool has exactly two Python files:
+- **`common/samma_finding/`** — the one output path for every tool: message schema v2 (`schema.py`),
+  the run wrapper and SIGTERM handling (`run.py`), stdout/file/NATS publishers (`output.py`, the NATS
+  client is imported lazily), the `config.yaml` loader (`config.py`), dual-stack resolution helpers
+  (`netutil.py`) and the check catalogues (`catalog/<scanner>.py`). Every Dockerfile copies it to
+  `/code/samma_finding`, next to `scan.py`, and copies `VERSION` to `/VERSION`.
+- **`<tool>/code/scan.py`** — detection and classification only. It defines `settings()`, pure
+  `classify(...)` helpers and `scan(run)`, and ends with `samma_finding.main(SCANNER, scan)` under
+  `if __name__ == "__main__"`, so the tests can import it. Network and third-party calls are behind
+  injectable arguments (`connect=`, `fetch_=`, `query=`, `runner=`) so the tests use fakes.
+- **`<tool>/code/sammaParser.py`** — a shim re-exporting `samma_finding.legacy.logger`/`endThis`
+  for out-of-tree scanners; nothing in this repo imports it any more.
 
-- **`scan.py`** — detection logic only; imports `sammaParser` and calls `logger()` / `endThis()`
-- **`sammaParser.py`** — handles output: appends `samma-io` metadata to every record, writes to `/out/<PARSER>.json` if `WRITE_TO_FILE != "False"`, and prints to stdout
+### Check ids and severities
 
-`sammaParser.py` is duplicated per tool (not shared) so each image is fully self-contained. The only difference between copies is the default value of `PARSER` and `SAMMA_IO_SCANNER`.
+A check id is `SAMMA-<SCANNER>-<NAME>`, listed in `common/samma_finding/catalog/<scanner>.py` with
+severity, title, remediation and references. `run.finding` refuses an id that is not in the tool's
+catalogue, and `tests/test_catalog.py` fails when a scanner emits an id the catalogue lacks or the
+catalogue lists an id the scanner never emits. Ids are never renamed; a renamed check is a new check.
+Severity is fixed per id, so two severities for one observation means two ids.
 
 ### Config precedence
 
@@ -56,7 +79,9 @@ Environment variable → `config.yaml` section for that tool → hardcoded fallb
 
 ### Build context
 
-Dockerfiles `COPY` from paths relative to the repo root (e.g. `COPY port-scanner/code /code`), which is why the build context must be `..` in every `docker-compose.yaml` and `.` (repo root) in the GitHub Actions workflow.
+Dockerfiles `COPY` from paths relative to the repo root (`COPY port-scanner/code /code`,
+`COPY common/samma_finding /code/samma_finding`, `COPY VERSION /VERSION`), which is why the build
+context must be `..` in every `docker-compose.yaml` and `.` (repo root) in the GitHub Actions workflow.
 
 ### Kubernetes manifests
 
@@ -68,10 +93,16 @@ Both embed the Filebeat config and liveness script as ConfigMaps in the same fil
 
 ## Adding a new tool
 
-1. Create `<name>/code/scan.py`, `sammaParser.py` (copy from any existing tool, change `PARSER` default), `requirements.txt`
-2. Create `Dockerfile` — copy pattern from an existing tool; add apt/pip deps if needed
-3. Create `docker-compose.yaml` with `context: ..` and tool-specific env vars; set `image: ghcr.io/samma-io/detect-<name>:latest`
-4. Copy `filebeat/filebeat.yml` verbatim from any existing tool
-5. Create `manifest/job.yaml` and `manifest/cron.yaml` using a new ConfigMap suffix
-6. Add a defaults section to `config.yaml`
-7. Add the new tool name to the `scanner` matrix in `.github/workflows/docker-build.yml`
+1. Create `<name>/code/scan.py` following an existing tool: `settings()`, `classify(...)`, `scan(run)`,
+   and `samma_finding.main("<name>", scan)` under `if __name__ == "__main__"`; copy `sammaParser.py`
+   verbatim; add `requirements.txt`
+2. Add `common/samma_finding/catalog/<name_with_underscores>.py` with `PREFIX = "SAMMA-<NAME>-"` and a
+   `CHECKS` dict, and register it in `catalog/__init__.py` (`SCANNERS`)
+3. Add the tool to `tests/helpers.py` `SCANNERS` and a test class in `tests/test_scanners.py`
+4. Create `Dockerfile` — copy the pattern from an existing tool (it already copies `common/samma_finding`
+   and `VERSION`); add apt/pip deps if needed
+5. Create `docker-compose.yaml` with `context: ..` and tool-specific env vars; set `image: ghcr.io/samma-io/detect-<name>:latest`
+6. Copy `filebeat/filebeat.yml` verbatim from any existing tool
+7. Create `manifest/job.yaml` and `manifest/cron.yaml` using a new ConfigMap suffix
+8. Add a defaults section to `config.yaml`
+9. Add the new tool name to the `scanner` matrix in `.github/workflows/docker-build.yml`

@@ -5,11 +5,13 @@ RUN pip3 install PyYAML nats-py --break-system-packages
 
 RUN mkdir /out
 COPY http-headers-scanner/code /code
+COPY common/samma_finding /code/samma_finding
+COPY VERSION /VERSION
 COPY config.yaml /config.yaml
 
 RUN useradd -ms /bin/bash samma
 RUN chown samma:samma /out
-RUN chown samma:samma /code/*.py
+RUN chown -R samma:samma /code
 RUN chmod 664 /code/*.py
 
 USER samma
