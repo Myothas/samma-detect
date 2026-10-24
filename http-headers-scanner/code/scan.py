@@ -36,14 +36,16 @@ VALUE_PREVIEW = 120
 
 
 def settings(environ=None, cfg=None):
+    """Environment > config.yaml > defaults. The port follows the scheme:
+    HTTPS=True without PORT means 443, never the port config.yaml lists for
+    plain HTTP (samma_finding.config.endpoint)."""
     env = os.environ if environ is None else environ
     section = config.section("http-headers-scanner", CONFIG_PATH, cfg)
-    https = config.truthy(env.get("HTTPS", section.get("https", False)))
-    default_port = 443 if https else 80
+    https, port = config.endpoint(env, section, default_https=False)
     return {
         "https": https,
-        "port": int(env.get("PORT", section.get("port", default_port))),
-        "timeout": float(env.get("TIMEOUT", section.get("timeout", 5))),
+        "port": port,
+        "timeout": float(config.setting(env, section, "timeout", 5)),
     }
 
 

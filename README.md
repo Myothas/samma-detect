@@ -114,6 +114,20 @@ ls port-scanner/out/die   # exists when the scan is done
 
 Every tool accepts a common set of variables plus tool-specific ones.
 
+### Settings precedence
+
+Every setting is resolved the same way: the **environment variable** wins, then the tool's section
+in [`config.yaml`](#configuration-file), then the built-in default. A variable that is set but
+empty counts as unset.
+
+For the tools that connect to one port under one scheme (`http-headers-scanner`,
+`http-redirect-scanner`, `waf-scanner`) the port follows the scheme: without `PORT`, `HTTPS=true`
+means 443 and `HTTPS=false` means 80, and a `port` in `config.yaml` applies only together with the
+`https` written next to it. So `HTTPS=True` on its own talks TLS to port 443; it never reuses the
+`port: 80` that `config.yaml` lists for plain HTTP (up to and including 2.0.1 it did, and recorded
+a TLS handshake with port 80 as the response). `tls-scanner` is always TLS: `PORT`, then
+`config.yaml`, then 443.
+
 ### Common variables (all tools)
 
 | Variable | Default | Description |
@@ -173,11 +187,11 @@ TARGET=example.com VERIFY_CERT=False docker compose -f tls-scanner/docker-compos
 | Variable | Default | Description |
 |---|---|---|
 | `HTTPS` | `False` | Use HTTPS instead of HTTP |
-| `PORT` | `80` | Port to connect to |
+| `PORT` | `80`, or `443` with `HTTPS=True` | Port to connect to (see [Settings precedence](#settings-precedence)) |
 | `TIMEOUT` | `5` | Connection timeout (seconds) |
 
 ```bash
-TARGET=example.com HTTPS=True PORT=443 docker compose -f http-headers-scanner/docker-compose.yaml up
+TARGET=example.com HTTPS=True docker compose -f http-headers-scanner/docker-compose.yaml up
 ```
 
 Checked headers: `Strict-Transport-Security`, `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, `X-XSS-Protection`.
@@ -217,11 +231,26 @@ TARGET=example.com docker compose -f whois-scanner/docker-compose.yaml up
 
 | Variable | Default | Description |
 |---|---|---|
+| `HTTPS` | `False` | Start the chain over HTTPS instead of plain HTTP (a `TARGET` given as a URL keeps its own scheme) |
+| `PORT` | `80`, or `443` with `HTTPS=True` | Port of the first request |
 | `TIMEOUT` | `5` | Per-request timeout (seconds) |
 | `MAX_REDIRECTS` | `10` | Maximum hops to follow |
 
 ```bash
 TARGET=http://example.com MAX_REDIRECTS=5 docker compose -f http-redirect-scanner/docker-compose.yaml up
+```
+
+### waf-scanner
+
+| Variable | Default | Description |
+|---|---|---|
+| `HTTPS` | `True` | Use HTTPS (the default) or plain HTTP |
+| `PORT` | `443`, or `80` with `HTTPS=False` | Port to connect to |
+| `TIMEOUT` | `5` | Per-request timeout (seconds) |
+| `USER_AGENT` | `samma-io-waf-scanner/1.0` | User-Agent of the baseline and probe requests |
+
+```bash
+TARGET=example.com docker compose -f waf-scanner/docker-compose.yaml up
 ```
 
 ---
@@ -400,7 +429,9 @@ built on the old pattern.
 
 ## Configuration file
 
-`config.yaml` at the repo root holds default values for all tools. Environment variables always take precedence.
+`config.yaml` at the repo root holds default values for all tools. Environment variables always
+take precedence, and a `port` applies only together with the `https` next to it (see
+[Settings precedence](#settings-precedence)).
 
 ```yaml
 defaults:
@@ -429,8 +460,15 @@ ssh-banner-scanner:
   timeout: 5
 
 http-redirect-scanner:
+  https: false
   timeout: 5
   max_redirects: 10
+
+waf-scanner:
+  port: 443
+  https: true
+  timeout: 5
+  user_agent: "samma-io-waf-scanner/1.0"
 ```
 
 ---

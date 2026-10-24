@@ -22,24 +22,44 @@ DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
 def settings(environ=None, cfg=None):
+    """Environment > config.yaml > defaults. The chain starts over plain
+    HTTP on port 80 unless HTTPS (and PORT) say otherwise; the port follows
+    the scheme (samma_finding.config.endpoint). A TARGET given as a URL
+    keeps its own scheme and port."""
     env = os.environ if environ is None else environ
     section = config.section("http-redirect-scanner", CONFIG_PATH, cfg)
+    https, port = config.endpoint(env, section, default_https=False)
     return {
-        "timeout": float(env.get("TIMEOUT", section.get("timeout", 5))),
-        "max_redirects": int(env.get("MAX_REDIRECTS", section.get("max_redirects", 10))),
+        "https": https,
+        "port": port,
+        "timeout": float(config.setting(env, section, "timeout", 5)),
+        "max_redirects": int(config.setting(env, section, "max_redirects", 10)),
     }
 
 
-def to_url(target):
-    """A URL for ``target``; bare hosts get ``http://``, IPv6 literals brackets."""
+def to_url(target, opts=None):
+    """The URL the chain starts from.
+
+    A target that is already a URL is used as is. A bare host or IP gets the
+    scheme and port from ``opts`` (plain HTTP on 80 when there are none);
+    the port is written only when it is not the scheme's own, and IPv6
+    literals get brackets.
+    """
     if target.startswith("http://") or target.startswith("https://"):
         return target
+    opts = opts or {}
+    scheme = "https" if opts.get("https") else "http"
+    host = target
     try:
         if isinstance(ipaddress.ip_address(target), ipaddress.IPv6Address):
-            return "http://[%s]" % target
+            host = "[%s]" % target
     except ValueError:
         pass
-    return "http://" + target
+    url = "%s://%s" % (scheme, host)
+    port = opts.get("port")
+    if port and int(port) != DEFAULT_PORTS[scheme]:
+        url = "%s:%d" % (url, int(port))
+    return url
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -131,7 +151,7 @@ def classify(start_url, hops, stop):
 
 def scan(run, opts=None, opener=None):
     opts = opts or settings()
-    start_url = to_url(run.target)
+    start_url = to_url(run.target, opts)
     hops, stop, error = follow(start_url, opts, opener)
     if stop == "error" and hops and hops[-1]["hop"] == 0:
         raise error  # the start URL itself could not be fetched: failed run

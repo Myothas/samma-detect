@@ -1,3 +1,9 @@
+# Built-in defaults for every scanner, copied into each image as /config.yaml.
+# An environment variable always wins over this file (README, "Settings
+# precedence"). A port listed here applies only together with the https next
+# to it: HTTPS=true in the environment without PORT means 443, not the port
+# written below for plain HTTP.
+
 scanner:
   name: port-scanner
   version: v0.1
@@ -35,6 +41,7 @@ ssh-banner-scanner:
 whois-scanner: {}
 
 http-redirect-scanner:
+  https: false   # the chain starts over plain HTTP; HTTPS=true starts it over TLS
   timeout: 5
   max_redirects: 10
 

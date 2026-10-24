@@ -93,15 +93,16 @@ BLOCKED_BODY_MARKERS = [
 
 
 def settings(environ=None, cfg=None):
+    """Environment > config.yaml > defaults; HTTPS by default, and the port
+    follows the scheme unless PORT is set (samma_finding.config.endpoint)."""
     env = os.environ if environ is None else environ
     section = config.section("waf-scanner", CONFIG_PATH, cfg)
-    https = config.truthy(env.get("HTTPS", section.get("https", True)))
-    default_port = 443 if https else 80
+    https, port = config.endpoint(env, section, default_https=True)
     return {
         "https": https,
-        "port": int(env.get("PORT", section.get("port", default_port))),
-        "timeout": float(env.get("TIMEOUT", section.get("timeout", 5))),
-        "user_agent": env.get("USER_AGENT", section.get("user_agent", "samma-io-waf-scanner/1.0")),
+        "port": port,
+        "timeout": float(config.setting(env, section, "timeout", 5)),
+        "user_agent": config.setting(env, section, "user_agent", "samma-io-waf-scanner/1.0"),
     }
 
 

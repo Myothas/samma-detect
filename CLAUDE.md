@@ -75,7 +75,12 @@ Severity is fixed per id, so two severities for one observation means two ids.
 
 ### Config precedence
 
-Environment variable → `config.yaml` section for that tool → hardcoded fallback in `scan.py`.
+Environment variable → `config.yaml` section for that tool → built-in default, through
+`samma_finding.config.setting()`; a blank variable or a null key counts as unset. A port follows
+its scheme: `config.endpoint()` resolves `(https, port)` together, uses the file's `port` only when
+the file's `https` names the scheme in effect, and defaults to 443 under HTTPS and 80 otherwise, so
+`HTTPS=True` without `PORT` connects to 443 (`http-headers-scanner`, `http-redirect-scanner`,
+`waf-scanner`; `tls-scanner` is always TLS and takes `PORT` > `config.yaml` > 443).
 
 `config.yaml` lives at the repo root and is copied into every image at `/config.yaml`. `scan.py` loads it with a relative path (`../../config.yaml` from `/code/`).
 

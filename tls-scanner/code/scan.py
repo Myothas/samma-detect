@@ -22,12 +22,14 @@ PROTOCOL_TOO_OLD_REASONS = ("UNSUPPORTED_PROTOCOL", "TLSV1_ALERT_PROTOCOL_VERSIO
 
 
 def settings(environ=None, cfg=None):
+    """Environment > config.yaml > defaults. Always TLS, so there is no
+    scheme for the port to follow: PORT, then config.yaml, then 443."""
     env = os.environ if environ is None else environ
     tls = config.section("tls-scanner", CONFIG_PATH, cfg)
     return {
-        "port": int(env.get("PORT", tls.get("port", 443))),
-        "timeout": float(env.get("TIMEOUT", tls.get("timeout", 5))),
-        "verify_cert": config.truthy(env.get("VERIFY_CERT", tls.get("verify_cert", True))),
+        "port": int(config.setting(env, tls, "port", 443)),
+        "timeout": float(config.setting(env, tls, "timeout", 5)),
+        "verify_cert": config.truthy(config.setting(env, tls, "verify_cert", True)),
     }
 
 
