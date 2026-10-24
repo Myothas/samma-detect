@@ -1,5 +1,10 @@
 name: Build and push Docker images
 
+# Every push to main builds the nine images and pushes them tagged with the
+# short git sha and latest. A manual run from another branch pushes the sha
+# tag only, so latest always means main. Releases (tags v*) are made by
+# release.yaml, which never moves latest.
+
 on:
   push:
     branches:
@@ -48,8 +53,10 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_PREFIX }}-${{ matrix.scanner }}
+          flavor: |
+            latest=false
           tags: |
-            type=raw,value=latest
+            type=raw,value=latest,enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
 
       - name: Build and push

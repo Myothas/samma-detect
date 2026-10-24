@@ -5,7 +5,8 @@ message per finding with a stable check id and a severity, says how the run ende
 [Samma](https://github.com/samma-io/guide): the Samma operator runs them in your Kubernetes cluster
 against every Ingress you annotate, and the findings end up in Grafana in that same cluster.
 
-Images are published to `ghcr.io/samma-io/detect-<tool-name>:latest` on every push to `main`.
+Images are published to `ghcr.io/samma-io/detect-<tool-name>`: tagged `latest` on every push to
+`main`, and tagged with the version on every release (see [Releases](#releases)).
 
 ---
 
@@ -461,7 +462,25 @@ ghcr.io/samma-io/detect-http-redirect-scanner:latest
 ghcr.io/samma-io/detect-waf-scanner:latest
 ```
 
-Each image is also tagged with the short git SHA (`sha-<7chars>`).
+Each image is also tagged with the short git SHA (`sha-<7chars>`). A manual run of the workflow
+from another branch pushes the SHA tag only, so `latest` always means `main`.
+
+## Releases
+
+A release is a git tag `v<version>` where `<version>` is the content of the `VERSION` file, the
+`scannerVersion` every message carries. Pushing the tag (or creating a GitHub release for it) runs
+`.github/workflows/release.yaml`, which
+
+1. checks that the tag matches `VERSION` and runs the unit tests;
+2. builds all nine images for `linux/amd64` and `linux/arm64` and pushes them to
+   `ghcr.io/samma-io/detect-<tool-name>` tagged `<version>` and `<version>-<short sha>`. A release
+   never moves `latest`;
+3. creates the GitHub release with a table of every image's digest and a
+   `detect-<version>-images.txt` file listing them as `image@digest`, for mirrors and for pinning.
+
+To release: change `VERSION`, merge, then `git tag v<version> && git push origin v<version>`.
+The [Samma operator](https://github.com/samma-io/operator) chart pins the detect images with its
+`scanners.detectTag` value, so a new detect release becomes a one-line change there.
 
 ---
 
@@ -499,7 +518,7 @@ To point tools at a different Elasticsearch cluster, set `ELASTICSEARCH_HOSTS` i
 detect/
 ├── VERSION                     # scannerVersion on every message
 ├── config.yaml
-├── .github/workflows/docker-build.yml
+├── .github/workflows/          # docker-build.yml (main: latest and sha tags), release.yaml (tags v*)
 ├── common/samma_finding/       # shared: schema v2, run outcome, publishers, check catalogues
 │   └── catalog/<scanner>.py
 ├── tests/                      # python3 -m unittest discover -s tests -t .

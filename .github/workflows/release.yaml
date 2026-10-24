@@ -1,0 +1,192 @@
+name: Release
+
+# A release is a tag v<version>, for example v2.0.0, where <version> is the
+# content of the VERSION file (the scannerVersion every message carries).
+# The workflow checks that, runs the unit tests, builds the nine detect
+# images for linux/amd64 and linux/arm64, pushes them to
+# ghcr.io/<owner>/detect-<scanner> tagged <version> and <version>-<short sha>
+# (never latest) and creates the GitHub release with every image's digest.
+# <owner> is the repository owner in lower case: samma-io upstream, your
+# user on a fork.
+on:
+  push:
+    tags: ["v*"]
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  verify:
+    name: Verify the tag and run the tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      short_sha: ${{ steps.version.outputs.short_sha }}
+      owner: ${{ steps.version.outputs.owner }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read the version from the tag and check VERSION
+        id: version
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::tag $tag is not v<major>.<minor>.<patch>[-<prerelease>]"
+            exit 1
+          fi
+          file_version="$(tr -d '[:space:]' < VERSION)"
+          if [ "$file_version" != "$version" ]; then
+            echo "::error::VERSION says $file_version but the tag says $version. Change VERSION first; it is the scannerVersion on every message."
+            exit 1
+          fi
+          prerelease=false
+          case "$version" in *-*) prerelease=true ;; esac
+          {
+            echo "version=$version"
+            echo "short_sha=$(git rev-parse --short=7 HEAD)"
+            echo "owner=$(printf '%s' "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run the standard-library test suite
+        run: python3 -m unittest discover -s tests -t .
+
+  images:
+    name: Image detect-${{ matrix.scanner }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        scanner:
+          - port-scanner
+          - traceroute-scanner
+          - tls-scanner
+          - http-headers-scanner
+          - dns-scanner
+          - ssh-banner-scanner
+          - whois-scanner
+          - http-redirect-scanner
+          - waf-scanner
+    env:
+      IMAGE: ghcr.io/${{ needs.verify.outputs.owner }}/detect-${{ matrix.scanner }}
+      VERSION: ${{ needs.verify.outputs.version }}
+      SHORT_SHA: ${{ needs.verify.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.scanner }}/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:${{ env.VERSION }}-${{ env.SHORT_SHA }}
+          labels: |
+            org.opencontainers.image.title=detect-${{ matrix.scanner }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=${{ matrix.scanner }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.scanner }}
+
+      - name: Record the digest
+        run: |
+          mkdir -p digests
+          printf '%s\t%s\n' "$IMAGE:$VERSION" "${{ steps.build.outputs.digest }}" \
+            > "digests/detect-${{ matrix.scanner }}.tsv"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-detect-${{ matrix.scanner }}
+          path: digests/
+          if-no-files-found: error
+
+  release:
+    name: GitHub release
+    needs: [verify, images]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      VERSION: ${{ needs.verify.outputs.version }}
+      OWNER: ${{ needs.verify.outputs.owner }}
+      SHORT_SHA: ${{ needs.verify.outputs.short_sha }}
+      PRERELEASE: ${{ needs.verify.outputs.prerelease }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Write the release notes and the image list
+        run: |
+          mkdir -p dist
+          # One "image@digest" per line, for mirrors and for pinning.
+          sort digests/*.tsv | while IFS="$(printf '\t')" read -r image digest; do
+            echo "${image%%:*}@$digest"
+          done > "dist/detect-$VERSION-images.txt"
+          {
+            echo "## Images"
+            echo
+            echo "Tagged \`$VERSION\` and \`$VERSION-$SHORT_SHA\`, built for linux/amd64 and linux/arm64. Every message they publish carries \`scannerVersion: $VERSION\`."
+            echo
+            echo "| Image | Digest |"
+            echo "|---|---|"
+            sort digests/*.tsv | while IFS="$(printf '\t')" read -r image digest; do
+              echo "| \`$image\` | \`$digest\` |"
+            done
+            echo
+            echo "The attached \`detect-$VERSION-images.txt\` lists the same images as \`image@digest\`."
+            echo
+            echo "## With the operator"
+            echo
+            echo "The samma-operator chart pins these images through \`scanners.detectTag\`: \`--set scanners.detectTag=$VERSION\`. One scanner can be pinned by digest with \`scanners.images.<scanner>=<image@digest>\`."
+          } > dist/notes.md
+          cat dist/notes.md
+
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          asset="dist/detect-$VERSION-images.txt"
+          if gh release view "$tag" --json body --jq .body > dist/existing-notes.md 2>/dev/null; then
+            # A release made by hand created this tag: keep its text, add ours below.
+            { cat dist/existing-notes.md; echo; echo; cat dist/notes.md; } > dist/final-notes.md
+            gh release upload "$tag" "$asset" --clobber
+            gh release edit "$tag" --notes-file dist/final-notes.md
+          else
+            flags=()
+            if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
+            gh release create "$tag" "$asset" --verify-tag \
+              --title "detect $VERSION" --notes-file dist/notes.md "${flags[@]}"
+          fi

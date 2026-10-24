@@ -34,7 +34,9 @@ inspect the JSON lines in `<tool>/out/`.
 
 `.github/workflows/docker-build.yml` runs on every push to `main`. It uses a matrix strategy to build all 9 tool images in parallel and pushes them to GHCR as `ghcr.io/samma-io/detect-<tool-name>:latest` and `ghcr.io/samma-io/detect-<tool-name>:sha-<short-sha>`.
 
-The workflow authenticates to GHCR using the automatic `GITHUB_TOKEN` — no secrets need to be configured.
+The workflow authenticates to GHCR using the automatic `GITHUB_TOKEN`; no secrets need to be configured. `latest` is pushed only from `main` (a `workflow_dispatch` run from another branch pushes the sha tag only).
+
+`.github/workflows/release.yaml` runs on tags `v*`: it checks that the tag equals `VERSION`, runs the unit tests, builds the nine images for linux/amd64 and linux/arm64 tagged `<version>` and `<version>-<short sha>` (never `latest`), and creates the GitHub release with every image's digest plus a `detect-<version>-images.txt` list. Releasing is: change `VERSION`, merge, push the tag. The operator chart pins these images with `scanners.detectTag`.
 
 ## Architecture
 
