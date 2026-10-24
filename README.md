@@ -486,6 +486,13 @@ The [Samma operator](https://github.com/samma-io/operator) chart pins the detect
 
 ## Kubernetes
 
+Every image runs as the `samma` user with uid 1000 and gid 1000 (`USER 1000:1000` in the
+Dockerfile). The `ubuntu` base image ships its own `ubuntu` user at uid 1000, so the Dockerfiles
+remove it before creating `samma`; without that, `useradd` picks 1001, and a pod that runs with
+`runAsUser: 1000` (what the Samma operator sets) owns none of the files in the image and cannot
+write `/out`. The numeric `USER` also lets Kubernetes verify `runAsNonRoot: true` without a
+`runAsUser`.
+
 The normal way to run these in Kubernetes is the
 [Samma operator](https://github.com/samma-io/operator). It creates the Jobs and CronJobs for you,
 from an annotated Ingress, the API or a `Scanner` resource, and wires up NATS. For a few fixed
@@ -537,7 +544,7 @@ Each tool directory:
 │   ├── scan.py                 # detection and classification; imports samma_finding
 │   ├── sammaParser.py          # compatibility shim over samma_finding.legacy
 │   └── requirements.txt
-├── Dockerfile                  # copies code/, common/samma_finding and VERSION
+├── Dockerfile                  # copies code/, common/samma_finding and VERSION; runs as samma, uid 1000
 ├── docker-compose.yaml
 ├── filebeat/
 │   └── filebeat.yml
