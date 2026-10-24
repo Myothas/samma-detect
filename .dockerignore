@@ -1,0 +1,16 @@
+# The build context is the repository root: every Dockerfile COPYs
+# <scanner>/code and common/samma_finding from here (release.yaml, docker
+# compose). Keep the context small and keep caches and local output out of
+# the images. Nothing below is COPYed by any Dockerfile.
+.git
+.github
+charts
+tests
+*.md
+**/__pycache__
+**/*.py[co]
+**/.pytest_cache
+**/out
+**/docker-compose.yaml
+**/filebeat
+**/manifest

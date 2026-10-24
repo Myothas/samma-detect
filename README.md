@@ -465,6 +465,30 @@ ghcr.io/samma-io/detect-waf-scanner:latest
 Each image is also tagged with the short git SHA (`sha-<7chars>`). A manual run of the workflow
 from another branch pushes the SHA tag only, so `latest` always means `main`.
 
+## Base image
+
+Every image is built `FROM python:3.13-slim-bookworm`, pinned by the digest of the multi-arch index,
+so a build today and a build next month start from the same bytes, and a rebuild of the
+`3.13-slim-bookworm` tag upstream changes nothing here until someone bumps the pin. Each
+Dockerfile installs only what its scanner needs: the packages in `code/requirements.txt` (PyYAML
+and nats-py everywhere, dnspython for dns-scanner, python-whois for whois-scanner) and, for
+traceroute-scanner alone, the Debian `traceroute` package. The code is owned by root and read-only
+to the `samma` user; `/out` and `/home/samma` are the writable paths. The build context is the
+repository root and `.dockerignore` keeps tests, charts and local output out of it.
+
+To bump the base, change all nine Dockerfiles at once (they are the same file apart from the
+scanner name):
+
+```bash
+docker buildx imagetools inspect python:3.13-slim-bookworm
+```
+
+Copy the top-level `Digest:` (the index digest, not one of the per-platform manifests) into every
+`FROM` line and update the date in the comment above it. The next release is built on the new
+base and its release notes carry the new per-image digests.
+
+---
+
 ## Releases
 
 A release is a git tag `v<version>` where `<version>` is the content of the `VERSION` file, the
@@ -486,12 +510,10 @@ The [Samma operator](https://github.com/samma-io/operator) chart pins the detect
 
 ## Kubernetes
 
-Every image runs as the `samma` user with uid 1000 and gid 1000 (`USER 1000:1000` in the
-Dockerfile). The `ubuntu` base image ships its own `ubuntu` user at uid 1000, so the Dockerfiles
-remove it before creating `samma`; without that, `useradd` picks 1001, and a pod that runs with
-`runAsUser: 1000` (what the Samma operator sets) owns none of the files in the image and cannot
-write `/out`. The numeric `USER` also lets Kubernetes verify `runAsNonRoot: true` without a
-`runAsUser`.
+Every image runs as the `samma` user, created with uid 1000 and gid 1000 explicitly
+(`USER 1000:1000` in the Dockerfile) because that is the `runAsUser` the Samma operator sets: a
+pod running as 1000 owns `/out` and can write it. The numeric `USER` also lets Kubernetes verify
+`runAsNonRoot: true` without a `runAsUser`.
 
 The normal way to run these in Kubernetes is the
 [Samma operator](https://github.com/samma-io/operator). It creates the Jobs and CronJobs for you,
@@ -525,6 +547,7 @@ To point tools at a different Elasticsearch cluster, set `ELASTICSEARCH_HOSTS` i
 detect/
 ├── VERSION                     # scannerVersion on every message
 ├── config.yaml
+├── .dockerignore               # the build context is the repo root
 ├── .github/workflows/          # docker-build.yml (main: latest and sha tags), release.yaml (tags v*)
 ├── common/samma_finding/       # shared: schema v2, run outcome, publishers, check catalogues
 │   └── catalog/<scanner>.py
