@@ -148,8 +148,11 @@ class EnvironmentTest(unittest.TestCase):
                 self.assertEqual(schema.scanner_version(version_files=(path,)), "3.1.4")
 
     def test_repository_version_file_is_the_fallback(self):
+        repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(repo_root, "VERSION"), encoding="utf-8") as handle:
+            expected = handle.read().strip()
         with mock.patch.dict(os.environ, {"SAMMA_SCANNER_VERSION": ""}):
-            self.assertEqual(schema.scanner_version(version_files=("/nonexistent/VERSION",)), "2.0.0")
+            self.assertEqual(schema.scanner_version(version_files=("/nonexistent/VERSION",)), expected)
 
     def test_run_id_prefers_env_then_hostname(self):
         with mock.patch.dict(os.environ, {"SAMMA_RUN_ID": "job-abc-12345"}):
